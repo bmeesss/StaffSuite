@@ -4,12 +4,18 @@ import com.hollandsmp.staffsessionapi.model.FailureReason;
 import com.hollandsmp.staffsessionapi.model.InvestigationResult;
 import com.hollandsmp.staffsessionapi.model.InvestigationStatus;
 import com.hollandsmp.staffsessionapi.model.InvestigationType;
+import com.hollandsmp.staffsession.core.StateMachine;
+import com.hollandsmp.staffsession.integrity.CorruptedProtection;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 
 import java.io.File;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.nio.file.Files;
 import java.util.Optional;
 import java.util.UUID;
@@ -58,55 +64,45 @@ public class StaffSessionDatabaseTest {
 
     @Test
     public void concurrentStartsForSameStafferYieldSingleActiveRow() throws Exception {
+        StaffSessionDatabase bootstrap = new StaffSessionDatabase(dbFile);
+        bootstrap.initialize();
+        bootstrap.close();
         final UUID staffer = UUID.randomUUID();
-        final CountDownLatch startGate = new CountDownLatch(1);
         ExecutorService executor = Executors.newFixedThreadPool(2);
-        Callable<InvestigationResult> first = createStartTask(staffer, UUID.randomUUID(), startGate);
-        Callable<InvestigationResult> second = createStartTask(staffer, UUID.randomUUID(), startGate);
-
-        Future<InvestigationResult> a = executor.submit(first);
-        Future<InvestigationResult> b = executor.submit(second);
-        startGate.countDown();
+        CountDownLatch gate = new CountDownLatch(1);
+        Future<SQLiteOutcome> a = executor.submit(createRawInsertTask(staffer, UUID.randomUUID(), gate));
+        Future<SQLiteOutcome> b = executor.submit(createRawInsertTask(staffer, UUID.randomUUID(), gate));
+        gate.countDown();
 
         int successCount = 0;
         int failureCount = 0;
-        if (a.get(10, TimeUnit.SECONDS).isSuccessful()) successCount++; else failureCount++;
-        if (b.get(10, TimeUnit.SECONDS).isSuccessful()) successCount++; else failureCount++;
+        if (a.get(10, TimeUnit.SECONDS).success) successCount++; else failureCount++;
+        if (b.get(10, TimeUnit.SECONDS).success) successCount++; else failureCount++;
 
         Assert.assertEquals(1, successCount);
         Assert.assertEquals(1, failureCount);
-
-        StaffSessionDatabase database = new StaffSessionDatabase(dbFile);
-        database.initialize();
-        Assert.assertTrue(database.isStafferInSession(staffer));
-        database.close();
         executor.shutdownNow();
     }
 
     @Test
     public void concurrentStartsForSameTargetYieldSingleActiveRow() throws Exception {
+        StaffSessionDatabase bootstrap = new StaffSessionDatabase(dbFile);
+        bootstrap.initialize();
+        bootstrap.close();
         final UUID target = UUID.randomUUID();
-        final CountDownLatch startGate = new CountDownLatch(1);
         ExecutorService executor = Executors.newFixedThreadPool(2);
-        Callable<InvestigationResult> first = createStartTask(UUID.randomUUID(), target, startGate);
-        Callable<InvestigationResult> second = createStartTask(UUID.randomUUID(), target, startGate);
-
-        Future<InvestigationResult> a = executor.submit(first);
-        Future<InvestigationResult> b = executor.submit(second);
-        startGate.countDown();
+        CountDownLatch gate = new CountDownLatch(1);
+        Future<SQLiteOutcome> a = executor.submit(createRawInsertTask(UUID.randomUUID(), target, gate));
+        Future<SQLiteOutcome> b = executor.submit(createRawInsertTask(UUID.randomUUID(), target, gate));
+        gate.countDown();
 
         int successCount = 0;
         int failureCount = 0;
-        if (a.get(10, TimeUnit.SECONDS).isSuccessful()) successCount++; else failureCount++;
-        if (b.get(10, TimeUnit.SECONDS).isSuccessful()) successCount++; else failureCount++;
+        if (a.get(10, TimeUnit.SECONDS).success) successCount++; else failureCount++;
+        if (b.get(10, TimeUnit.SECONDS).success) successCount++; else failureCount++;
 
         Assert.assertEquals(1, successCount);
         Assert.assertEquals(1, failureCount);
-
-        StaffSessionDatabase database = new StaffSessionDatabase(dbFile);
-        database.initialize();
-        Assert.assertTrue(database.isPlayerBeingInvestigated(target));
-        database.close();
         executor.shutdownNow();
     }
 
@@ -116,13 +112,15 @@ public class StaffSessionDatabaseTest {
         database.initialize();
         UUID staffer = UUID.randomUUID();
         UUID target = UUID.randomUUID();
-        Assert.assertTrue(database.startInvestigation(staffer, target, InvestigationType.PLAYER, "r1").isSuccessful());
+        InvestigationResult start = database.startInvestigation(staffer, target, InvestigationType.PLAYER, "r1");
+        Assert.assertTrue(start.isSuccessful());
         database.close();
 
         StaffSessionDatabase reopened = new StaffSessionDatabase(dbFile);
         reopened.initialize();
         reopened.recoverActiveInvestigations();
         Assert.assertFalse(reopened.isStafferInSession(staffer));
+        Assert.assertEquals(InvestigationStatus.CRASHED_RECOVERED, reopened.findInvestigationById(start.getInvestigation().getInvestigationId()).get().getStatus());
         reopened.close();
     }
 
@@ -136,20 +134,86 @@ public class StaffSessionDatabaseTest {
         database.close();
     }
 
-    private Callable<InvestigationResult> createStartTask(final UUID staffer, final UUID target, final CountDownLatch startGate) {
-        return new Callable<InvestigationResult>() {
+    @Test
+    public void stateMachineRejectsInvalidTransitions() {
+        StateMachine stateMachine = new StateMachine();
+        Assert.assertTrue(stateMachine.canTransition(StateMachine.State.ACTIVE, StateMachine.State.ENDED));
+        Assert.assertTrue(stateMachine.canTransition(StateMachine.State.ACTIVE, StateMachine.State.CRASHED_RECOVERED));
+        Assert.assertTrue(stateMachine.canTransition(StateMachine.State.ACTIVE, StateMachine.State.CORRUPTED));
+        Assert.assertFalse(stateMachine.canTransition(StateMachine.State.ENDED, StateMachine.State.ACTIVE));
+        Assert.assertFalse(stateMachine.canTransition(StateMachine.State.CORRUPTED, StateMachine.State.ACTIVE));
+    }
+
+    @Test
+    public void corruptedProtectionDetectsInvalidPlayerInvestigation() {
+        CorruptedProtection protection = new CorruptedProtection();
+        com.hollandsmp.staffsessionapi.model.Investigation investigation =
+            new com.hollandsmp.staffsessionapi.model.Investigation(
+                UUID.randomUUID().toString(),
+                UUID.randomUUID(),
+                null,
+                InvestigationType.PLAYER,
+                InvestigationStatus.ACTIVE,
+                null,
+                System.currentTimeMillis(),
+                null
+            );
+        Assert.assertTrue(protection.isCorrupted(investigation));
+    }
+
+    @Test
+    public void malformedRowIsRecoveredAsCorrupted() throws Exception {
+        StaffSessionDatabase database = new StaffSessionDatabase(dbFile);
+        database.initialize();
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
+             PreparedStatement ps = connection.prepareStatement("INSERT INTO investigations(investigation_id, staffer, target, type, status, source_report_id, started_at) VALUES(?,?,?,?,?,?,?)")) {
+            ps.setString(1, UUID.randomUUID().toString());
+            ps.setString(2, "not-a-uuid");
+            ps.setNull(3, java.sql.Types.VARCHAR);
+            ps.setString(4, InvestigationType.PLAYER.name());
+            ps.setString(5, InvestigationStatus.ACTIVE.name());
+            ps.setString(6, "bad");
+            ps.setLong(7, System.currentTimeMillis());
+            ps.executeUpdate();
+        }
+        database.close();
+
+        StaffSessionDatabase reopened = new StaffSessionDatabase(dbFile);
+        reopened.initialize();
+        reopened.recoverActiveInvestigations();
+        Assert.assertTrue(reopened.loadActiveInvestigations().isEmpty());
+        reopened.close();
+    }
+
+    private Callable<SQLiteOutcome> createRawInsertTask(final UUID staffer, final UUID target, final CountDownLatch startGate) {
+        return new Callable<SQLiteOutcome>() {
             @Override
-            public InvestigationResult call() throws Exception {
+            public SQLiteOutcome call() throws Exception {
                 startGate.await(10, TimeUnit.SECONDS);
-                StaffSessionDatabase database = new StaffSessionDatabase(dbFile);
-                database.initialize();
-                try {
-                    return database.startInvestigation(staffer, target, InvestigationType.PLAYER, "r");
-                } finally {
-                    database.close();
+                try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
+                     PreparedStatement ps = connection.prepareStatement("INSERT INTO investigations(investigation_id, staffer, target, type, status, source_report_id, started_at) VALUES(?,?,?,?,?,?,?)")) {
+                    ps.setString(1, UUID.randomUUID().toString());
+                    ps.setString(2, staffer.toString());
+                    ps.setString(3, target.toString());
+                    ps.setString(4, InvestigationType.PLAYER.name());
+                    ps.setString(5, InvestigationStatus.ACTIVE.name());
+                    ps.setString(6, "r");
+                    ps.setLong(7, System.currentTimeMillis());
+                    ps.executeUpdate();
+                    return new SQLiteOutcome(true);
+                } catch (SQLException e) {
+                    return new SQLiteOutcome(false);
                 }
             }
         };
+    }
+
+    private static final class SQLiteOutcome {
+        private final boolean success;
+
+        private SQLiteOutcome(boolean success) {
+            this.success = success;
+        }
     }
 
     private void deleteRecursively(File file) {

@@ -62,6 +62,9 @@ public final class StaffSessionImpl implements StaffSessionAPI {
         if (!isAvailable()) {
             return CompletableFuture.completedFuture(InvestigationResult.failure(FailureReason.SESSION_UNAVAILABLE));
         }
+        if (staffer == null || type == null) {
+            return CompletableFuture.completedFuture(InvestigationResult.failure(FailureReason.INVALID_STATE));
+        }
         return sessionController.startInvestigation(staffer, target, type, reportId);
     }
 
@@ -70,22 +73,28 @@ public final class StaffSessionImpl implements StaffSessionAPI {
         if (!isAvailable()) {
             return CompletableFuture.completedFuture(InvestigationResult.failure(FailureReason.SESSION_UNAVAILABLE));
         }
+        if (staffer == null) {
+            return CompletableFuture.completedFuture(InvestigationResult.failure(FailureReason.INVALID_STATE));
+        }
         return sessionController.endInvestigation(staffer);
     }
 
     @Override
     public boolean isStafferInSession(UUID staffer) {
-        return isAvailable() && database.isStafferInSession(staffer);
+        return isAvailable() && staffer != null && database.isStafferInSession(staffer);
     }
 
     @Override
     public boolean isPlayerBeingInvestigated(UUID target) {
-        return isAvailable() && database.isPlayerBeingInvestigated(target);
+        return isAvailable() && target != null && database.isPlayerBeingInvestigated(target);
     }
 
     @Override
     public Optional<Investigation> getActiveInvestigation(UUID staffer) {
         if (!isAvailable()) {
+            return Optional.empty();
+        }
+        if (staffer == null) {
             return Optional.empty();
         }
         return database.getActiveInvestigation(staffer);
