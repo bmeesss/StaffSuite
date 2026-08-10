@@ -51,7 +51,14 @@ public final class StaffSessionDatabase {
                         "status TEXT NOT NULL," +
                         "source_report_id TEXT," +
                         "started_at INTEGER NOT NULL," +
-                        "ended_at INTEGER)");
+                        "ended_at INTEGER," +
+                        "world_name TEXT," +
+                        "min_x REAL," +
+                        "min_y REAL," +
+                        "min_z REAL," +
+                        "max_x REAL," +
+                        "max_y REAL," +
+                        "max_z REAL)");
                 statement.executeUpdate("CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_per_staffer ON investigations(staffer) WHERE status = 'ACTIVE'");
                 statement.executeUpdate("CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_target ON investigations(target) WHERE status = 'ACTIVE' AND type = 'PLAYER'");
                 statement.executeUpdate("CREATE TABLE IF NOT EXISTS security_audit (" +
@@ -77,6 +84,12 @@ public final class StaffSessionDatabase {
     }
 
     public synchronized InvestigationResult startInvestigation(UUID staffer, UUID target, InvestigationType type, String reportId) {
+        return startInvestigation(staffer, target, type, reportId, null, null, null, null, null, null, null);
+    }
+
+    public synchronized InvestigationResult startInvestigation(UUID staffer, UUID target, InvestigationType type, String reportId,
+                                                               String worldName, Double minX, Double minY, Double minZ,
+                                                               Double maxX, Double maxY, Double maxZ) {
         if (!isAvailable()) return InvestigationResult.failure(FailureReason.SESSION_UNAVAILABLE);
         if (staffer == null || type == null) return InvestigationResult.failure(FailureReason.INVALID_STATE);
         if (type == InvestigationType.PLAYER && target == null) return InvestigationResult.failure(FailureReason.INVALID_TARGET);
@@ -84,7 +97,7 @@ public final class StaffSessionDatabase {
         long now = System.currentTimeMillis();
         try {
             connection.setAutoCommit(false);
-            try (PreparedStatement ps = connection.prepareStatement("INSERT INTO investigations(investigation_id, staffer, target, type, status, source_report_id, started_at) VALUES(?,?,?,?,?,?,?)")) {
+            try (PreparedStatement ps = connection.prepareStatement("INSERT INTO investigations(investigation_id, staffer, target, type, status, source_report_id, started_at, world_name, min_x, min_y, min_z, max_x, max_y, max_z) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)")) {
                 ps.setString(1, investigationId);
                 ps.setString(2, staffer.toString());
                 ps.setString(3, target == null ? null : target.toString());
@@ -92,12 +105,19 @@ public final class StaffSessionDatabase {
                 ps.setString(5, InvestigationStatus.ACTIVE.name());
                 ps.setString(6, reportId);
                 ps.setLong(7, now);
+                if (worldName == null) ps.setNull(8, Types.VARCHAR); else ps.setString(8, worldName);
+                if (minX == null) ps.setNull(9, Types.REAL); else ps.setDouble(9, minX);
+                if (minY == null) ps.setNull(10, Types.REAL); else ps.setDouble(10, minY);
+                if (minZ == null) ps.setNull(11, Types.REAL); else ps.setDouble(11, minZ);
+                if (maxX == null) ps.setNull(12, Types.REAL); else ps.setDouble(12, maxX);
+                if (maxY == null) ps.setNull(13, Types.REAL); else ps.setDouble(13, maxY);
+                if (maxZ == null) ps.setNull(14, Types.REAL); else ps.setDouble(14, maxZ);
                 ps.executeUpdate();
             }
             audit(investigationId, staffer, target, SecurityAudit.EventType.INVESTIGATION_STARTED.name(), "active");
             connection.commit();
             connection.setAutoCommit(true);
-            return InvestigationResult.success(new Investigation(investigationId, staffer, target, type, InvestigationStatus.ACTIVE, reportId, now, null));
+            return InvestigationResult.success(new Investigation(investigationId, staffer, target, type, InvestigationStatus.ACTIVE, reportId, now, null, worldName, minX, minY, minZ, maxX, maxY, maxZ));
         } catch (SQLException e) {
             rollbackQuietly();
             return mapConstraintFailure(e);
@@ -152,7 +172,7 @@ public final class StaffSessionDatabase {
     }
 
     public synchronized Optional<Investigation> getActiveInvestigation(UUID staffer) {
-        try (PreparedStatement ps = connection.prepareStatement("SELECT investigation_id, staffer, target, type, status, source_report_id, started_at, ended_at FROM investigations WHERE staffer = ? AND status = 'ACTIVE' LIMIT 1")) {
+        try (PreparedStatement ps = connection.prepareStatement("SELECT investigation_id, staffer, target, type, status, source_report_id, started_at, ended_at, world_name, min_x, min_y, min_z, max_x, max_y, max_z FROM investigations WHERE staffer = ? AND status = 'ACTIVE' LIMIT 1")) {
             ps.setString(1, staffer.toString());
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) return Optional.empty();
@@ -189,7 +209,7 @@ public final class StaffSessionDatabase {
 
     public synchronized List<Investigation> loadActiveInvestigations() {
         List<Investigation> result = new ArrayList<Investigation>();
-        try (PreparedStatement ps = connection.prepareStatement("SELECT investigation_id, staffer, target, type, status, source_report_id, started_at, ended_at FROM investigations WHERE status = 'ACTIVE'")) {
+        try (PreparedStatement ps = connection.prepareStatement("SELECT investigation_id, staffer, target, type, status, source_report_id, started_at, ended_at, world_name, min_x, min_y, min_z, max_x, max_y, max_z FROM investigations WHERE status = 'ACTIVE'")) {
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     String investigationId = rs.getString("investigation_id");
@@ -209,7 +229,7 @@ public final class StaffSessionDatabase {
         if (investigationId == null) {
             return Optional.empty();
         }
-        try (PreparedStatement ps = connection.prepareStatement("SELECT investigation_id, staffer, target, type, status, source_report_id, started_at, ended_at FROM investigations WHERE investigation_id = ? LIMIT 1")) {
+        try (PreparedStatement ps = connection.prepareStatement("SELECT investigation_id, staffer, target, type, status, source_report_id, started_at, ended_at, world_name, min_x, min_y, min_z, max_x, max_y, max_z FROM investigations WHERE investigation_id = ? LIMIT 1")) {
             ps.setString(1, investigationId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) {
@@ -297,7 +317,14 @@ public final class StaffSessionDatabase {
             InvestigationStatus.valueOf(rs.getString("status")),
             rs.getString("source_report_id"),
             rs.getLong("started_at"),
-            rs.getObject("ended_at") == null ? null : rs.getLong("ended_at")
+            rs.getObject("ended_at") == null ? null : rs.getLong("ended_at"),
+            rs.getString("world_name"),
+            rs.getObject("min_x") == null ? null : rs.getDouble("min_x"),
+            rs.getObject("min_y") == null ? null : rs.getDouble("min_y"),
+            rs.getObject("min_z") == null ? null : rs.getDouble("min_z"),
+            rs.getObject("max_x") == null ? null : rs.getDouble("max_x"),
+            rs.getObject("max_y") == null ? null : rs.getDouble("max_y"),
+            rs.getObject("max_z") == null ? null : rs.getDouble("max_z")
         );
     }
 

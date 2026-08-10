@@ -1,34 +1,77 @@
 package com.hollandsmp.staffsession.investigation;
 
+import com.hollandsmp.staffsession.runtime.RuntimeInvestigation;
+import com.hollandsmp.staffsession.runtime.RuntimeInvestigationCache;
+import com.hollandsmp.staffsessionapi.model.InvestigationType;
+import org.bukkit.Bukkit;
+import org.bukkit.Location;
+import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerMoveEvent;
+import org.bukkit.plugin.java.JavaPlugin;
+
 import java.util.UUID;
 
-public final class AreaInvestigation {
-    private final UUID staffer;
-    private final String worldName;
-    private final double minX;
-    private final double minY;
-    private final double minZ;
-    private final double maxX;
-    private final double maxY;
-    private final double maxZ;
+public final class AreaInvestigation implements Listener {
+    private final JavaPlugin plugin;
+    private final RuntimeInvestigationCache runtimeCache;
+    private final LeashSystem leashSystem;
+    private final TeleportAuthorization teleportAuthorization;
 
-    public AreaInvestigation(UUID staffer, String worldName, double minX, double minY, double minZ, double maxX, double maxY, double maxZ) {
-        this.staffer = staffer;
-        this.worldName = worldName;
-        this.minX = minX;
-        this.minY = minY;
-        this.minZ = minZ;
-        this.maxX = maxX;
-        this.maxY = maxY;
-        this.maxZ = maxZ;
+    public AreaInvestigation(JavaPlugin plugin, RuntimeInvestigationCache runtimeCache, LeashSystem leashSystem, TeleportAuthorization teleportAuthorization) {
+        this.plugin = plugin;
+        this.runtimeCache = runtimeCache;
+        this.leashSystem = leashSystem;
+        this.teleportAuthorization = teleportAuthorization;
     }
 
-    public UUID getStaffer() { return staffer; }
-    public String getWorldName() { return worldName; }
-    public double getMinX() { return minX; }
-    public double getMinY() { return minY; }
-    public double getMinZ() { return minZ; }
-    public double getMaxX() { return maxX; }
-    public double getMaxY() { return maxY; }
-    public double getMaxZ() { return maxZ; }
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onMove(PlayerMoveEvent event) {
+        Player player = event.getPlayer();
+        RuntimeInvestigation active = runtimeCache.getByStaffer(player.getUniqueId());
+        if (active == null || active.getWorldName() == null) {
+            return;
+        }
+        Location to = event.getTo();
+        if (to == null || to.getWorld() == null) {
+            return;
+        }
+        if (!to.getWorld().getName().equals(active.getWorldName()) || !insideBounds(active, to)) {
+            event.setCancelled(true);
+            final Location center = center(active);
+            if (center != null) {
+                Bukkit.getScheduler().runTask(plugin, new Runnable() {
+                    @Override
+                    public void run() {
+                        if (player.isOnline()) {
+                            player.teleport(center);
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    public void shutdown() {
+        runtimeCache.clear();
+    }
+
+    private boolean insideBounds(RuntimeInvestigation investigation, Location location) {
+        return location.getX() >= investigation.getMinX() && location.getX() <= investigation.getMaxX()
+            && location.getY() >= investigation.getMinY() && location.getY() <= investigation.getMaxY()
+            && location.getZ() >= investigation.getMinZ() && location.getZ() <= investigation.getMaxZ();
+    }
+
+    private Location center(RuntimeInvestigation investigation) {
+        org.bukkit.World world = Bukkit.getWorld(investigation.getWorldName());
+        if (world == null) {
+            return null;
+        }
+        return new Location(world,
+            (investigation.getMinX() + investigation.getMaxX()) / 2.0D,
+            (investigation.getMinY() + investigation.getMaxY()) / 2.0D,
+            (investigation.getMinZ() + investigation.getMaxZ()) / 2.0D);
+    }
 }

@@ -1,16 +1,16 @@
-package com.hollandsmp.staffsessionapi.model;
+package com.hollandsmp.staffsession.runtime;
+
+import com.hollandsmp.staffsessionapi.model.InvestigationStatus;
+import com.hollandsmp.staffsessionapi.model.InvestigationType;
 
 import java.util.UUID;
 
-public final class Investigation {
+public final class RuntimeInvestigation {
     private final String investigationId;
     private final UUID staffer;
     private final UUID target;
     private final InvestigationType type;
     private final InvestigationStatus status;
-    private final String sourceReportId;
-    private final long startedAt;
-    private final Long endedAt;
     private final String worldName;
     private final Double minX;
     private final Double minY;
@@ -19,22 +19,13 @@ public final class Investigation {
     private final Double maxY;
     private final Double maxZ;
 
-    public Investigation(String investigationId, UUID staffer, UUID target, InvestigationType type,
-                         InvestigationStatus status, String sourceReportId, long startedAt, Long endedAt) {
-        this(investigationId, staffer, target, type, status, sourceReportId, startedAt, endedAt, null, null, null, null, null, null, null);
-    }
-
-    public Investigation(String investigationId, UUID staffer, UUID target, InvestigationType type,
-                         InvestigationStatus status, String sourceReportId, long startedAt, Long endedAt,
-                         String worldName, Double minX, Double minY, Double minZ, Double maxX, Double maxY, Double maxZ) {
+    public RuntimeInvestigation(String investigationId, UUID staffer, UUID target, InvestigationType type, InvestigationStatus status,
+                                String worldName, Double minX, Double minY, Double minZ, Double maxX, Double maxY, Double maxZ) {
         this.investigationId = investigationId;
         this.staffer = staffer;
         this.target = target;
         this.type = type;
         this.status = status;
-        this.sourceReportId = sourceReportId;
-        this.startedAt = startedAt;
-        this.endedAt = endedAt;
         this.worldName = worldName;
         this.minX = minX;
         this.minY = minY;
@@ -49,9 +40,6 @@ public final class Investigation {
     public UUID getTarget() { return target; }
     public InvestigationType getType() { return type; }
     public InvestigationStatus getStatus() { return status; }
-    public String getSourceReportId() { return sourceReportId; }
-    public long getStartedAt() { return startedAt; }
-    public Long getEndedAt() { return endedAt; }
     public String getWorldName() { return worldName; }
     public Double getMinX() { return minX; }
     public Double getMinY() { return minY; }
