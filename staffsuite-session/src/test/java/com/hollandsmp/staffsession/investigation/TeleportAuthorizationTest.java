@@ -40,6 +40,17 @@ public class TeleportAuthorizationTest {
         Assert.assertFalse(authorization.isTeleportAuthorized(playerId, "inv-1", destination));
     }
 
+    @Test
+    public void shutdownClearsAuthorizationState() {
+        RuntimeInvestigationCache cache = new RuntimeInvestigationCache();
+        TeleportAuthorization authorization = new TeleportAuthorization(null, cache);
+        UUID playerId = UUID.randomUUID();
+        Location destination = new Location(worldProxy("world"), 0.0, 64.0, 0.0);
+        authorization.authorizeTeleport(playerId, "inv-1", destination, System.currentTimeMillis() + 5000L);
+        authorization.shutdown();
+        Assert.assertFalse(authorization.isTeleportAuthorized(playerId, "inv-1", destination));
+    }
+
     private World worldProxy(final String name) {
         return (World) Proxy.newProxyInstance(
             World.class.getClassLoader(),

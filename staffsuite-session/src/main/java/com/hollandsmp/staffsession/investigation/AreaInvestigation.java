@@ -19,12 +19,14 @@ public final class AreaInvestigation implements Listener {
     private final RuntimeInvestigationCache runtimeCache;
     private final LeashSystem leashSystem;
     private final TeleportAuthorization teleportAuthorization;
+    private final AreaBoundaryProvider boundaryProvider;
 
-    public AreaInvestigation(JavaPlugin plugin, RuntimeInvestigationCache runtimeCache, LeashSystem leashSystem, TeleportAuthorization teleportAuthorization) {
+    public AreaInvestigation(JavaPlugin plugin, RuntimeInvestigationCache runtimeCache, LeashSystem leashSystem, TeleportAuthorization teleportAuthorization, AreaBoundaryProvider boundaryProvider) {
         this.plugin = plugin;
         this.runtimeCache = runtimeCache;
         this.leashSystem = leashSystem;
         this.teleportAuthorization = teleportAuthorization;
+        this.boundaryProvider = boundaryProvider;
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)

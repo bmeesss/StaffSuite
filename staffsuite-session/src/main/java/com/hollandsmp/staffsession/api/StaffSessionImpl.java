@@ -4,6 +4,7 @@ import com.hollandsmp.staffsession.core.PolicyEngine;
 import com.hollandsmp.staffsession.core.SessionController;
 import com.hollandsmp.staffsession.db.StaffSessionDatabase;
 import com.hollandsmp.staffsession.integrity.CrashRecovery;
+import com.hollandsmp.staffsession.investigation.AreaBoundaryProvider;
 import com.hollandsmp.staffsession.investigation.AreaInvestigation;
 import com.hollandsmp.staffsession.investigation.DefaultAreaBoundaryProvider;
 import com.hollandsmp.staffsession.investigation.LeashSystem;
@@ -16,6 +17,8 @@ import com.hollandsmp.staffsessionapi.model.Investigation;
 import com.hollandsmp.staffsessionapi.model.InvestigationResult;
 import com.hollandsmp.staffsessionapi.model.InvestigationType;
 import org.bukkit.Bukkit;
+import org.bukkit.Location;
+import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.Optional;
@@ -32,7 +35,7 @@ public final class StaffSessionImpl implements StaffSessionAPI {
     private final TeleportAuthorization teleportAuthorization;
     private final PlayerInvestigation playerInvestigation;
     private final AreaInvestigation areaInvestigation;
-    private final DefaultAreaBoundaryProvider areaBoundaryProvider;
+    private final AreaBoundaryProvider areaBoundaryProvider;
     private volatile boolean available;
 
     private StaffSessionImpl(JavaPlugin plugin) {
@@ -43,9 +46,9 @@ public final class StaffSessionImpl implements StaffSessionAPI {
         this.sessionController = new SessionController(database, policyEngine);
         this.teleportAuthorization = new TeleportAuthorization(plugin, runtimeCache);
         this.leashSystem = new LeashSystem(plugin, runtimeCache, teleportAuthorization);
-        this.playerInvestigation = new PlayerInvestigation(plugin, runtimeCache, leashSystem, teleportAuthorization);
         this.areaBoundaryProvider = new DefaultAreaBoundaryProvider();
-        this.areaInvestigation = new AreaInvestigation(plugin, runtimeCache, leashSystem, teleportAuthorization);
+        this.playerInvestigation = new PlayerInvestigation(plugin, database, runtimeCache, leashSystem, teleportAuthorization);
+        this.areaInvestigation = new AreaInvestigation(plugin, runtimeCache, leashSystem, teleportAuthorization, areaBoundaryProvider);
     }
 
     public static StaffSessionImpl create(JavaPlugin plugin) {
@@ -59,6 +62,7 @@ public final class StaffSessionImpl implements StaffSessionAPI {
             database.initialize();
             new CrashRecovery(database).recoverStaleInvestigations();
             runtimeCache.clear();
+            rebuildRuntimeCacheFromDatabase();
             Bukkit.getPluginManager().registerEvents(teleportAuthorization, plugin);
             Bukkit.getPluginManager().registerEvents(leashSystem, plugin);
             Bukkit.getPluginManager().registerEvents(playerInvestigation, plugin);
@@ -98,16 +102,23 @@ public final class StaffSessionImpl implements StaffSessionAPI {
         if (staffer == null || type == null) {
             return CompletableFuture.completedFuture(InvestigationResult.failure(FailureReason.INVALID_STATE));
         }
-        return sessionController.startInvestigation(staffer, target, type, reportId, null).whenComplete((result, throwable) -> {
-            if (throwable == null && result != null && result.isSuccessful() && result.getInvestigation() != null) {
-                Bukkit.getScheduler().runTask(plugin, new Runnable() {
-                    @Override
-                    public void run() {
-                        runtimeCache.install(result.getInvestigation());
-                    }
-                });
-            }
-        });
+        return captureRuntimeSnapshot(staffer, target, type).thenCompose(runtimeBounds ->
+            sessionController.startInvestigation(staffer, target, type, reportId, runtimeBounds).thenApply(result -> {
+                if (result != null && result.isSuccessful() && result.getInvestigation() != null) {
+                    final Investigation investigation = result.getInvestigation();
+                    Bukkit.getScheduler().runTask(plugin, new Runnable() {
+                        @Override
+                        public void run() {
+                            runtimeCache.install(investigation);
+                            if (investigation.getTarget() != null) {
+                                teleportAuthorization.revokeTeleportAuthorization(investigation.getTarget());
+                            }
+                        }
+                    });
+                }
+                return result;
+            })
+        );
     }
 
     @Override
@@ -118,7 +129,22 @@ public final class StaffSessionImpl implements StaffSessionAPI {
         if (staffer == null) {
             return CompletableFuture.completedFuture(InvestigationResult.failure(FailureReason.INVALID_STATE));
         }
-        return sessionController.endInvestigation(staffer);
+        return sessionController.endInvestigation(staffer).thenApply(result -> {
+            if (result != null && result.isSuccessful() && result.getInvestigation() != null) {
+                final Investigation investigation = result.getInvestigation();
+                Bukkit.getScheduler().runTask(plugin, new Runnable() {
+                    @Override
+                    public void run() {
+                        runtimeCache.removeByStaffer(investigation.getStaffer());
+                        if (investigation.getTarget() != null) {
+                            runtimeCache.removeByTarget(investigation.getTarget());
+                            teleportAuthorization.revokeTeleportAuthorization(investigation.getTarget());
+                        }
+                    }
+                });
+            }
+            return result;
+        });
     }
 
     @Override
@@ -140,5 +166,55 @@ public final class StaffSessionImpl implements StaffSessionAPI {
             return Optional.empty();
         }
         return database.getActiveInvestigation(staffer);
+    }
+
+    public RuntimeInvestigationCache getRuntimeCache() {
+        return runtimeCache;
+    }
+
+    public TeleportAuthorization getTeleportAuthorization() {
+        return teleportAuthorization;
+    }
+
+    public AreaBoundaryProvider getAreaBoundaryProvider() {
+        return areaBoundaryProvider;
+    }
+
+    private CompletableFuture<Investigation> captureRuntimeSnapshot(final UUID staffer, final UUID target, final InvestigationType type) {
+        final CompletableFuture<Investigation> future = new CompletableFuture<Investigation>();
+        Bukkit.getScheduler().runTask(plugin, new Runnable() {
+            @Override
+            public void run() {
+                Player stafferPlayer = Bukkit.getPlayer(staffer);
+                if (stafferPlayer == null) {
+                    future.complete(null);
+                    return;
+                }
+                Location anchor;
+                if (type == InvestigationType.PLAYER) {
+                    Player targetPlayer = target == null ? null : Bukkit.getPlayer(target);
+                    if (targetPlayer == null) {
+                        future.complete(null);
+                        return;
+                    }
+                    anchor = targetPlayer.getLocation();
+                } else {
+                    anchor = stafferPlayer.getLocation();
+                }
+                if (anchor == null || anchor.getWorld() == null) {
+                    future.complete(null);
+                    return;
+                }
+                Investigation base = new Investigation(null, staffer, target, type, null, null, 0L, null);
+                future.complete(areaBoundaryProvider.createBoundarySnapshot(base, anchor));
+            }
+        });
+        return future;
+    }
+
+    private void rebuildRuntimeCacheFromDatabase() {
+        for (Investigation investigation : database.loadActiveInvestigations()) {
+            runtimeCache.install(investigation);
+        }
     }
 }

@@ -6,6 +6,7 @@ import com.hollandsmp.staffsessionapi.model.InvestigationStatus;
 import com.hollandsmp.staffsessionapi.model.InvestigationType;
 import com.hollandsmp.staffsession.core.StateMachine;
 import com.hollandsmp.staffsession.integrity.CorruptedProtection;
+import com.hollandsmp.staffsession.runtime.RuntimeInvestigationCache;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -121,6 +122,43 @@ public class StaffSessionDatabaseTest {
         reopened.recoverActiveInvestigations();
         Assert.assertFalse(reopened.isStafferInSession(staffer));
         Assert.assertEquals(InvestigationStatus.CRASHED_RECOVERED, reopened.findInvestigationById(start.getInvestigation().getInvestigationId()).get().getStatus());
+        reopened.close();
+    }
+
+    @Test
+    public void areaInvestigationBoundsArePersistedAndRestored() {
+        StaffSessionDatabase database = new StaffSessionDatabase(dbFile);
+        database.initialize();
+        UUID staffer = UUID.randomUUID();
+        InvestigationResult start = database.startInvestigation(staffer, null, InvestigationType.AREA, "area-1",
+            "world", -14.0D, 38.0D, -28.0D, 34.0D, 88.0D, 20.0D);
+        Assert.assertTrue(start.isSuccessful());
+        Optional<com.hollandsmp.staffsessionapi.model.Investigation> active = database.getActiveInvestigation(staffer);
+        Assert.assertTrue(active.isPresent());
+        Assert.assertEquals("world", active.get().getWorldName());
+        Assert.assertEquals(-14.0D, active.get().getMinX(), 0.0001D);
+        Assert.assertEquals(88.0D, active.get().getMaxY(), 0.0001D);
+        database.close();
+    }
+
+    @Test
+    public void activeInvestigationCanBeRebuiltFromDatabaseAfterReopen() {
+        StaffSessionDatabase database = new StaffSessionDatabase(dbFile);
+        database.initialize();
+        UUID staffer = UUID.randomUUID();
+        UUID target = UUID.randomUUID();
+        InvestigationResult start = database.startInvestigation(staffer, target, InvestigationType.PLAYER, "r1");
+        Assert.assertTrue(start.isSuccessful());
+        database.close();
+
+        StaffSessionDatabase reopened = new StaffSessionDatabase(dbFile);
+        reopened.initialize();
+        RuntimeInvestigationCache cache = new RuntimeInvestigationCache();
+        for (com.hollandsmp.staffsessionapi.model.Investigation investigation : reopened.loadActiveInvestigations()) {
+            cache.install(investigation);
+        }
+        Assert.assertNotNull(cache.getByStaffer(staffer));
+        Assert.assertNotNull(cache.getByTarget(target));
         reopened.close();
     }
 
