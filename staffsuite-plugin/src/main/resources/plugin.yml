@@ -1,0 +1,5 @@
+name: StaffSuite
+main: com.hollandsmp.staffsuite.StaffSuitePlugin
+version: 1.0-SNAPSHOT
+author: HollandSMP
+description: HollandSMP staff management and investigation plugin
