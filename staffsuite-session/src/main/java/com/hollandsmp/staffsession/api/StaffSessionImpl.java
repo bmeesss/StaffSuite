@@ -149,23 +149,46 @@ public final class StaffSessionImpl implements StaffSessionAPI {
 
     @Override
     public boolean isStafferInSession(UUID staffer) {
-        return isAvailable() && staffer != null && database.isStafferInSession(staffer);
+        if (!isAvailable() || staffer == null) {
+            return false;
+        }
+        return runtimeCache.getByStaffer(staffer) != null;
     }
 
     @Override
     public boolean isPlayerBeingInvestigated(UUID target) {
-        return isAvailable() && target != null && database.isPlayerBeingInvestigated(target);
+        if (!isAvailable() || target == null) {
+            return false;
+        }
+        return runtimeCache.getByTarget(target) != null;
     }
 
     @Override
     public Optional<Investigation> getActiveInvestigation(UUID staffer) {
-        if (!isAvailable()) {
+        if (!isAvailable() || staffer == null) {
             return Optional.empty();
         }
-        if (staffer == null) {
+        com.hollandsmp.staffsession.runtime.RuntimeInvestigation cached = runtimeCache.getByStaffer(staffer);
+        if (cached == null) {
             return Optional.empty();
         }
-        return database.getActiveInvestigation(staffer);
+        return Optional.of(new Investigation(
+            cached.getInvestigationId(),
+            cached.getStaffer(),
+            cached.getTarget(),
+            cached.getType(),
+            cached.getStatus(),
+            null,
+            0L,
+            null,
+            cached.getWorldName(),
+            cached.getMinX(),
+            cached.getMinY(),
+            cached.getMinZ(),
+            cached.getMaxX(),
+            cached.getMaxY(),
+            cached.getMaxZ()
+        ));
     }
 
     public RuntimeInvestigationCache getRuntimeCache() {
